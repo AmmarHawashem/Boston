@@ -3,8 +3,7 @@ title: "Regularized_Regression_Boston"
 author: "Ammar Al-Hawashem"
 date: "10/17/2021"
 df_print: paged
-output: 'rmdformats::readthedown'
-
+output:  html_document
 
 
 ---
