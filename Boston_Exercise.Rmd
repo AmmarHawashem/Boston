@@ -1,0 +1,415 @@
+---
+title: "Regularized_Regression_Boston"
+author: "Ammar Al-Hawashem"
+date: "10/17/2021"
+df_print: paged
+output: 'rmdformats::readthedown'
+
+
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+# Prerequisites
+
+```{r}
+install.packages("glmnet", repos = "https://cran.us.r-project.org")
+```
+
+```{r}
+# Helper packages
+library(tidyverse) # general data munging & visualization
+
+# Modeling packages
+library(tidymodels)
+
+# Model interpretability packages
+library(vip)      # for variable importance
+
+# for engine("glmnet")
+library(glmnet)
+```
+Import Boston Housing Dataset
+```{r}
+Boston <- read_csv("Data/boston.csv")
+```
+Split the data
+```{r}
+# Stratified sampling with the rsample package
+set.seed(1234)  # for reproducibility
+initial_split(Boston, prop = 0.7, strata = "cmedv") -> split
+ training(split) -> train
+ testing(split) -> test
+```
+# Implementation
+
+## lambda (penalty parameter) = 0
+
+### Ridge (mixture=0)
+
+
+
+```{r}
+# step 1: create ridge model object
+ridge_mod <- linear_reg(penalty = 1, mixture = 0) %>% 
+  set_engine("glmnet")
+
+# Step 2: Creat model & pre-processing recipe
+model_recipe <- recipe(
+  cmedv ~ .,
+  data = train
+) %>% 
+  step_normalize(all_predictors())
+
+# Step 3: fit model workflow
+ridge_fit <- workflow() %>% 
+  add_recipe(model_recipe) %>% 
+  add_model(ridge_mod) %>% 
+  fit(data = train)
+
+# Step 4: 
+ridge_fit %>% 
+  pull_workflow_fit() %>% 
+  tidy()
+
+```
+
+### Lasso (mixture=1)
+
+```{r}
+# Step 1: create Lasso model object
+Lasso_mod <- linear_reg(penalty = 1, mixture = 1) %>% 
+  set_engine("glmnet")
+
+# Step 2: is the same recipe
+
+# Step 3: fit model workflow
+Lasso_fit <- workflow() %>% 
+  add_recipe(model_recipe) %>% 
+  add_model(Lasso_mod) %>% 
+  fit(data = train)
+
+# Step 4: 
+Lasso_fit %>% 
+  pull_workflow_fit() %>% 
+  tidy()
+
+```
+
+### Elastic net (mixture = 0.5 -not always-)
+
+
+
+```{r}
+# Step 1: create ridge model object
+EN_mod <- linear_reg(penalty = 1, mixture = 0.5) %>%
+  set_engine("glmnet")
+
+# Step 2: is the same recipe
+
+  
+# Step 3: fit model workflow
+EN_fit <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(EN_mod) %>%
+  fit(data = train)
+
+# Step 4: extract and tidy results
+EN_fit %>%
+  pull_workflow_fit() %>%
+  tidy()
+```
+# Tuning
+
+## Tuning regularization strength (lambda) 
+
+### Ridge
+```{r}
+# step 1: create ridge model object
+ridge_mod <- linear_reg(penalty = tune(), mixture = 0) %>% 
+  set_engine("glmnet")
+
+# Step 2: Since there is tuning, cross-validation is required:
+folds = vfold_cv(data = train, v = 5)
+
+# Step 3:  create a hyper parameter tuning grid for penalty
+hyper_grid <- grid_regular(penalty(range = c(-10, 5)), levels = 50)
+# NOTE: penalty(range = c(-10, 5) --> means 1e-10 to 1e+05
+
+
+# Step 4: we will use the same recipe
+
+
+# Step 5:  train our model across the hyper parameter grid
+set.seed(1234)
+resultsRidge <- tune_grid(ridge_mod, model_recipe, resamples = folds, grid = hyper_grid)
+
+# Step 6: Extract the best result
+show_best(resultsRidge, metric = "rmse")
+
+
+```
+
+#### Answers for Ridge:
+A- What is the minimum RMSE?
+4.74042
+
+
+B- What is the penalty parameter value for the optimal model?
+1.000000e-10	
+
+C- What are the coefficients for the optimal model?
+```{r}
+# step 1: create ridge model object
+ridge_mod <- linear_reg(penalty = 1.000000e-10, mixture = 0) %>% 
+  set_engine("glmnet")
+
+# Step 2: Creat model & pre-processing recipe
+model_recipe <- recipe(
+  cmedv ~ .,
+  data = train
+) %>% 
+  step_normalize(all_predictors())
+
+# Step 3: fit model workflow
+ridge_fit <- workflow() %>% 
+  add_recipe(model_recipe) %>% 
+  add_model(ridge_mod) %>% 
+  fit(data = train)
+
+# Step 4: 
+ridge_fit %>% 
+  pull_workflow_fit() %>% 
+  tidy()
+
+```
+
+D- Plot the top 10 most influential features. Do these features have positive or negative impacts on your response variable?
+
+
+```{r}
+# identify best model
+lowest_rmse_ridge <- resultsRidge %>%
+  select_best("rmse")
+
+# extract  model workflow
+VIP_ridge <- finalize_workflow(
+  workflow() %>% add_recipe(model_recipe) %>% add_model(ridge_mod), 
+  lowest_rmse_ridge)
+
+# extract feature importance for top 10 most influential features
+top_10_features_ridge <- VIP_ridge %>%
+  fit(train) %>%
+  pull_workflow_fit() %>% 
+  vi(lambda = lowest_rmse_ridge$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  top_n(10, wt = Importance)
+
+ggplot(top_10_features_ridge, aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+# The x-axos represents the coefficient 
+```
+
+### Lasso
+
+```{r}
+# step 1: create ridge model object
+Lasso_mod <- linear_reg(penalty = tune(), mixture = 0) %>% 
+  set_engine("glmnet")
+
+# Step 2: Since there is tuning, cross-validation is required:
+folds = vfold_cv(data = train, v = 5)
+
+# Step 3:  create a hyper parameter tuning grid for penalty
+hyper_grid <- grid_regular(penalty(range = c(-10, 5)),
+                           levels = 50)
+# NOTE: penalty(range = c(-10, 5) --> means 1e-10 to 1e+05
+
+
+# Step 4: we will use the same recipe
+
+
+# Step 5:  train our model across the hyper parameter grid
+set.seed(1234)
+resultsLasso <- tune_grid(Lasso_mod, model_recipe, resamples = folds, grid = hyper_grid)
+
+# Step 6: Extract the best result
+show_best(resultsLasso, metric = "rmse")
+
+```
+
+#### Answers for Lasso:
+
+A- What is the minimum RMSE?
+show_best(resultsLasso, metric = "rmse", 1)
+
+
+B- What is the penalty parameter value for the optimal model?
+1.000000e-10	
+
+C- What are the coefficients for the optimal model?
+```{r}
+# step 1: create ridge model object
+Lasso_mod <- linear_reg(penalty = 1.000000e-10, mixture = 1) %>% 
+  set_engine("glmnet")
+
+# Step 2: Creat model & pre-processing recipe
+model_recipe <- recipe(
+  cmedv ~ .,
+  data = train
+) %>% 
+  step_normalize(all_predictors())
+
+# Step 3: fit model workflow
+Lasso_fit <- workflow() %>% 
+  add_recipe(model_recipe) %>% 
+  add_model(Lasso_mod) %>% 
+  fit(data = train)
+
+# Step 4: 
+Lasso_fit %>% 
+  pull_workflow_fit() %>% 
+  tidy()
+
+```
+D- Plot the top 10 most influential features. Do these features have positive or negative impacts on your response variable?
+
+```{r}
+# identify best model
+lowest_rmse_lasso <- resultsLasso %>%
+  select_best("rmse")
+
+# extract  model workflow
+VIP_lasso <- finalize_workflow(
+  workflow() %>% add_recipe(model_recipe) %>% add_model(Lasso_mod), 
+  lowest_rmse_lasso)
+
+# extract feature importance for top 10 most influential features
+top_10_features_lasso <- VIP_lasso %>%
+  fit(train) %>%
+  pull_workflow_fit() %>% 
+  vi(lambda = lowest_rmse_lasso$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  top_n(10, wt = Importance)
+
+ggplot(top_10_features_lasso, aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+# The x-axis represents the coefficient 
+```
+
+
+
+## Tuning regularization type & strength (Penalty & mixture)
+
+```{r}
+# step 1: create ridge model object
+EN_mod <- linear_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet")
+
+# Step 2: Since there is tuning, cross-validation is required:
+folds = vfold_cv(data = train, v = 5)
+
+# Step 3:  create a hyper parameter tuning grid for penalty
+hyper_grid <- grid_regular(penalty(range = c(-10, 5)),
+                           levels = 50,
+                           mixture())
+# NOTE: penalty(range = c(-10, 5) --> means 1e-10 to 1e+05
+
+
+# Step 4: we will use the same recipe
+
+
+# Step 5:  train our model across the hyper parameter grid
+set.seed(1234)
+resultsEN <- tune_grid(EN_mod, model_recipe, resamples = folds, grid = hyper_grid)
+
+# Step 6: Extract the best result
+show_best(resultsEN, metric = "rmse")
+
+
+```
+
+#### Answers for Elastic Net:
+A- What is the optimal model’s RMSE?
+show_best `r(resultsEN, metric = "rmse", 1)`
+
+B- What are the parameters (penalty type & magnitude) for the optimal model?
+```{r}
+# Step 1: create ridge model object
+EN_mod <- linear_reg(penalty = 0.1526418, mixture = 0.02040816) %>%
+  set_engine("glmnet")
+
+# Step 2: is the same recipe
+
+  
+# Step 3: fit model workflow
+EN_fit <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(EN_mod) %>%
+  fit(data = train)
+
+# Step 4: extract and tidy results
+EN_fit %>%
+  pull_workflow_fit() %>%
+  tidy()
+```
+
+
+
+
+
+
+
+C- How does it compare to your previous models?
+  There is no big difference
+  
+  
+D- Plot the top 10 most influential features. Do these features have positive or negative impacts on your response variable?
+
+
+```{r}
+# identify best model
+lowest_rmse_EN <- resultsEN %>%
+  select_best("rmse")
+
+# extract  model workflow
+VIP_EN <- finalize_workflow(
+  workflow() %>% add_recipe(model_recipe) %>% add_model(EN_mod), 
+  lowest_rmse_EN)
+
+# extract feature importance for top 10 most influential features
+top_10_features_EN <- VIP_EN %>%
+  fit(train) %>%
+  pull_workflow_fit() %>% 
+  vi(lambda = lowest_rmse_EN$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  top_n(10, wt = Importance)
+
+ggplot(top_10_features_EN, aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+# The x-axis represents the coefficient 
+```
